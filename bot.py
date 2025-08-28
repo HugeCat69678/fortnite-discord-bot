@@ -1,10 +1,12 @@
-import requests
-import time
 import os
+import requests
+import asyncio
+import discord
 
 # Environment variables
-DISCORD_WEBHOOK = os.getenv("WEBHOOK_URL")
-API_KEY = os.getenv("API_KEY")
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")  # Bot token
+DISCORD_WEBHOOK = os.getenv("WEBHOOK_URL")  # Webhook URL
+API_KEY = os.getenv("API_KEY")  # Fortnite API key
 
 # Player mapping: Discord ID -> Epic Username
 PLAYERS = {
@@ -14,50 +16,62 @@ PLAYERS = {
 
 API_URL = "https://fortnite-api.com/v2/stats/br/v2/{epic}"
 
+# Track last match IDs per player
+last_match_ids = {}
+
+intents = discord.Intents.default()
+intents.messages = True
+client = discord.Client(intents=intents)
+
 def send_embed(title, description, color=0x00ff00):
-    """Send an embed to Discord via webhook."""
-    data = {
-        "embeds": [
-            {
-                "title": title,
-                "description": description,
-                "color": color
-            }
-        ]
-    }
+    """Send embed via webhook."""
+    data = {"embeds": [{"title": title, "description": description, "color": color}]}
     requests.post(DISCORD_WEBHOOK, json=data)
 
-# Send a test message when the bot starts
-send_embed("Bot Online ✅", "The Fortnite → Discord bot is now running!", color=0x3498db)
+async def check_matches_loop():
+    await client.wait_until_ready()
+    while not client.is_closed():
+        for discord_id, epic_name in PLAYERS.items():
+            url = API_URL.format(epic=epic_name)
+            res = requests.get(url, headers={"Authorization": API_KEY}).json()
 
-def check_matches():
-    for discord_id, epic_name in PLAYERS.items():
-        url = API_URL.format(epic=epic_name)
-        res = requests.get(url, headers={"Authorization": API_KEY}).json()
+            if "data" not in res:
+                continue
 
-        if "data" not in res:
-            continue
+            # Assume lastMatch contains: id, mode, kills, placement, victory
+            last_match = res["data"].get("lastMatch", {})
+            match_id = last_match.get("id")
+            if not match_id:
+                continue
 
-        # Placeholder — replace with real API response fields
-        last_match = res["data"]
+            if last_match_ids.get(discord_id) == match_id:
+                continue
 
-        won = last_match.get("lastMatch", {}).get("victory", False)
-        kills = last_match.get("lastMatch", {}).get("kills", 0)
-        placement = last_match.get("lastMatch", {}).get("placement", 99)
-        mode = last_match.get("lastMatch", {}).get("mode", "Unknown")
+            last_match_ids[discord_id] = match_id
 
-        if won:
-            title = f"🏆 {discord_id} WON!"
-            desc = f"Mode: {mode}\nEliminations: {kills}"
-            color = 0x00ff00
-        else:
-            title = f"💀 {discord_id} LOST"
-            desc = f"Mode: {mode}\nEliminations: {kills}\nPlacement: #{placement}"
-            color = 0xff0000
+            mode = last_match.get("mode", "Unknown")  # Solo, Duo, Trio, Squad
+            kills = last_match.get("kills", 0)
+            placement = last_match.get("placement", 99)
+            won = last_match.get("victory", False)
+            mention = f"<@{discord_id}>"
 
-        send_embed(title, desc, color)
+            if won:
+                title = f"🏆 {mention} WON!"
+                desc = f"Mode: {mode}\nEliminations: {kills}\nPlacement: #{placement}"
+                color = 0x00ff00
+            else:
+                title = f"💀 {mention} LOST"
+                desc = f"Mode: {mode}\nEliminations: {kills}\nPlacement: #{placement}"
+                color = 0xff0000
 
-if __name__ == "__main__":
-    while True:
-        check_matches()
-        time.sleep(60)
+            send_embed(title, desc, color)
+
+        await asyncio.sleep(60)
+
+@client.event
+async def on_ready():
+    print(f"Bot online as {client.user}")
+    send_embed("Bot Online ✅", "The Fortnite → Discord bot is now running!", color=0x3498db)
+    client.loop.create_task(check_matches_loop())
+
+client.run(DISCORD_TOKEN)
