@@ -19,94 +19,82 @@ PLAYERS = {
 API_URL = "https://fortnite-api.com/v2/stats/br/v2/{epic}"
 last_match_ids = {}
 
-# --- DISCORD CLIENT & SLASH COMMANDS ---
 intents = discord.Intents.default()
-intents.messages = True
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
-# --- FUNCTION TO SEND EMBED VIA WEBHOOK ---
-def send_embed(title, description, color=0x00ff00):
+# --- HELPER FUNCTION TO SEND DETAILED EMBED ---
+def send_detailed_embed(title, user, mode, queue_type, kills, placement, won, skin_url=None):
+    color = 0x00ff00 if won else 0xff0000
+    desc = f"**Queue Type:** {queue_type}\n**Game Mode:** {mode}\n**Eliminations:** {kills}"
+    if not won:
+        desc += f"\n**Placement:** #{placement}"
+    data = {
+        "embeds": [{
+            "title": title,
+            "description": desc,
+            "color": color,
+            "thumbnail": {"url": skin_url} if skin_url else None
+        }]
+    }
     print(f"[Webhook] Sending embed: {title}")
-    data = {"embeds": [{"title": title, "description": description, "color": color}]}
     requests.post(DISCORD_WEBHOOK, json=data)
 
-# --- STARTUP MESSAGE ---
+# --- STARTUP ---
 async def send_startup_message():
     await client.wait_until_ready()
-    print("[Bot] Sending startup embed...")
-    send_embed("Bot Online ✅", "The Fortnite → Discord bot is now running!", color=0x3498db)
+    send_detailed_embed("Bot Online ✅", user=None, mode="N/A", queue_type="N/A", kills=0, placement=0, won=True)
 
-# --- CHECK REAL FORTNITE MATCHES ---
+# --- CHECK REAL MATCHES ---
 async def check_matches_loop():
     await client.wait_until_ready()
     while not client.is_closed():
-        print("[MatchChecker] Checking Fortnite matches...")
         for discord_id, epic_name in PLAYERS.items():
             try:
                 url = API_URL.format(epic=epic_name)
                 res = requests.get(url, headers={"Authorization": API_KEY}).json()
-
                 if "data" not in res:
-                    print(f"[MatchChecker] No data for {epic_name}")
                     continue
-
                 last_match = res["data"].get("lastMatch", {})
                 match_id = last_match.get("id")
                 if not match_id:
                     continue
                 if last_match_ids.get(discord_id) == match_id:
                     continue
-
                 last_match_ids[discord_id] = match_id
 
-                mode = last_match.get("mode", "Unknown")
+                mode = last_match.get("mode", "Unknown")       # Solo/Duo/Trio/Squad
+                queue_type = last_match.get("type", "Battle Royale") # Queue type
                 kills = last_match.get("kills", 0)
                 placement = last_match.get("placement", 99)
                 won = last_match.get("victory", False)
+                skin_url = last_match.get("skin", {}).get("image") # example, depends on API
                 mention = f"<@{discord_id}>"
-
-                if won:
-                    title = f"🏆 {mention} WON!"
-                    desc = f"Mode: {mode}\nEliminations: {kills}\nPlacement: #{placement}"
-                    color = 0x00ff00
-                else:
-                    title = f"💀 {mention} LOST"
-                    desc = f"Mode: {mode}\nEliminations: {kills}\nPlacement: #{placement}"
-                    color = 0xff0000
-
-                send_embed(title, desc, color)
-                print(f"[MatchChecker] Sent match for {mention}: {'WON' if won else 'LOST'}")
+                title = f"🏆 {mention} WON!" if won else f"💀 {mention} LOST"
+                send_detailed_embed(title, mention, mode, queue_type, kills, placement, won, skin_url)
             except Exception as e:
                 print(f"[MatchChecker] Error checking match for {epic_name}: {e}")
         await asyncio.sleep(60)
 
-# --- SLASH COMMAND: /cmatch ---
-@tree.command(name="cmatch", description="Send a custom Fortnite match message via webhook")
+# --- SLASH COMMAND /cmatch ---
+@tree.command(name="cmatch", description="Send a custom detailed Fortnite match")
 @app_commands.describe(
-    user="The user to mention",
+    user="Discord user to mention",
     won="Did they win?",
     mode="Game mode: Solo, Duo, Trio, Squad",
+    queue_type="Queue type: Battle Royale, Blitz Royale, etc.",
     kills="Number of eliminations",
-    placement="Placement if lost"
+    placement="Placement if lost",
+    skin_url="URL of the skin thumbnail (optional)"
 )
-async def cmatch(interaction: discord.Interaction, user: discord.Member, won: bool, mode: str, kills: int, placement: int = 0):
-    print(f"[SlashCommand] {interaction.user} used /cmatch for {user}")
+async def cmatch(interaction: discord.Interaction, user: discord.Member, won: bool, mode: str, queue_type: str, kills: int, placement: int = 0, skin_url: str = None):
     mention = f"<@{user.id}>"
-    if won:
-        title = f"🏆 {mention} WON!"
-        desc = f"Mode: {mode}\nEliminations: {kills}"
-        color = 0x00ff00
-    else:
-        title = f"💀 {mention} LOST"
-        desc = f"Mode: {mode}\nEliminations: {kills}\nPlacement: #{placement}"
-        color = 0xff0000
+    title = f"🏆 {mention} WON!" if won else f"💀 {mention} LOST"
+    send_detailed_embed(title, mention, mode, queue_type, kills, placement, won, skin_url)
+    await interaction.response.send_message("Custom detailed match sent via webhook ✅", ephemeral=True)
+    print(f"[SlashCommand] {interaction.user} sent /cmatch for {mention}")
 
-    send_embed(title, desc, color)
-    await interaction.response.send_message("Custom match sent via webhook ✅", ephemeral=True)
-    print(f"[SlashCommand] Embed sent for {mention}: {'WON' if won else 'LOST'}")
-
-# --- BOT READY EVENT ---
+# --- ON READY ---
 @client.event
 async def on_ready():
     if GUILD_ID:
