@@ -1,173 +1,105 @@
 import os
+import datetime
 import requests
-import asyncio
 import discord
 from discord import app_commands
-from datetime import datetime
+from discord.ext import commands
+from flask import Flask
+from threading import Thread
 
-# --- ENVIRONMENT VARIABLES ---
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-DISCORD_WEBHOOK = os.getenv("WEBHOOK_URL")
-API_KEY = os.getenv("API_KEY")
-GUILD_ID = int(os.getenv("GUILD_ID", 0))  # optional
+# -------------------------------
+# Flask Keep-Alive Server
+# -------------------------------
+app = Flask('')
 
-# --- PLAYER MAPPING ---
-PLAYERS = {
-    "1355963578221334570": "Dov1duzass",
-    "722100931164110939": "Huge_CatWasTaken"
-}
+@app.route('/')
+def home():
+    return "Fortnite Tracker 🚀 is alive!"
 
-API_URL = "https://fortnite-api.com/v2/stats/br/v2/{epic}"
-last_match_ids = {}
+def run():
+    app.run(host="0.0.0.0", port=8080)
 
-# --- DISCORD CLIENT & SLASH COMMANDS ---
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+
+# -------------------------------
+# Discord Bot Setup
+# -------------------------------
+TOKEN = os.getenv("DISCORD_TOKEN")  # your bot token in Render env vars
+WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")  # webhook URL for match results
+
 intents = discord.Intents.default()
-client = discord.Client(intents=intents)
-tree = app_commands.CommandTree(client)
+client = commands.Bot(command_prefix="!", intents=intents)
 
-# --- PROFESSIONAL EMBED FUNCTION ---
-def send_professional_embed(user_mention, mode, queue_type, kills, placement, won, skin_url=None):
-    color = 0x00ff00 if won else 0xff0000
-    status_title = "🏆 Victory!" if won else "💀 Defeat"
-    placement_display = "🥇 1st" if won else f"#{placement}"
-    
-    embed = {
-        "title": f"{status_title} — {user_mention}",
-        "color": color,
-        "timestamp": datetime.utcnow().isoformat(),
-        "thumbnail": {"url": skin_url} if skin_url else None,
-        "fields": [
-            {"name": "Player", "value": user_mention, "inline": True},
-            {"name": "Game Mode", "value": mode, "inline": True},
-            {"name": "Queue Type", "value": queue_type, "inline": True},
-            {"name": "Eliminations", "value": f"{kills} 💥", "inline": True},
-            {"name": "Placement", "value": placement_display, "inline": True},
-            {"name": "Status", "value": "Victory 🏆" if won else "Defeat 💀", "inline": True}
-        ],
-        "footer": {"text": "Fortnite Tracker 🚀"}
-    }
-    
-    print(f"[Webhook] Sending embed: {status_title} for {user_mention}")
-    requests.post(DISCORD_WEBHOOK, json={"embeds": [embed]})
-
-# --- STARTUP SEQUENCE ---
-async def send_startup_message():
-    await client.wait_until_ready()
-    
-    # 1️⃣ Bot Online
-    print("[Bot] Sending 'Bot Online' embed...")
-    send_professional_embed(
-        "Bot Online",
-        mode="N/A",
-        queue_type="N/A",
-        kills=0,
-        placement=0,
-        won=True,
-        skin_url=None
-    )
-    
-    # 2️⃣ Check Fortnite API
-    api_success = False
-    for discord_id, epic_name in PLAYERS.items():
-        try:
-            url = API_URL.format(epic=epic_name)
-            res = requests.get(url, headers={"Authorization": API_KEY}).json()
-            if "data" in res:
-                api_success = True
-                break
-        except Exception as e:
-            print(f"[Startup] Fortnite API check error: {e}")
-    
-    if api_success:
-        print("[Bot] Fortnite API connected successfully!")
-        send_professional_embed(
-            "Fortnite API Connected ✅",
-            mode="N/A",
-            queue_type="N/A",
-            kills=0,
-            placement=0,
-            won=True,
-            skin_url=None
-        )
-    else:
-        print("[Bot] Fortnite API connection failed!")
-        send_professional_embed(
-            "Fortnite API Connection Failed ❌",
-            mode="N/A",
-            queue_type="N/A",
-            kills=0,
-            placement=0,
-            won=False,
-            skin_url=None
-        )
-
-# --- CHECK REAL FORTNITE MATCHES ---
-async def check_matches_loop():
-    await client.wait_until_ready()
-    while not client.is_closed():
-        print("[MatchChecker] Checking Fortnite matches...")
-        for discord_id, epic_name in PLAYERS.items():
-            try:
-                url = API_URL.format(epic=epic_name)
-                res = requests.get(url, headers={"Authorization": API_KEY}).json()
-                if "data" not in res:
-                    print(f"[MatchChecker] No data for {epic_name}")
-                    continue
-
-                last_match = res["data"].get("lastMatch", {})
-                match_id = last_match.get("id")
-                if not match_id:
-                    continue
-                if last_match_ids.get(discord_id) == match_id:
-                    continue
-
-                last_match_ids[discord_id] = match_id
-
-                mode = last_match.get("mode", "Unknown")
-                queue_type = last_match.get("type", "Battle Royale")
-                kills = last_match.get("kills", 0)
-                placement = last_match.get("placement", 99)
-                won = last_match.get("victory", False)
-                skin_url = last_match.get("skin", {}).get("image")
-                mention = f"<@{discord_id}>"
-
-                send_professional_embed(mention, mode, queue_type, kills, placement, won, skin_url)
-                print(f"[MatchChecker] Sent match for {mention}: {'WON' if won else 'LOST'}")
-            except Exception as e:
-                print(f"[MatchChecker] Error for {epic_name}: {e}")
-        await asyncio.sleep(60)
-
-# --- SLASH COMMAND /cmatch ---
-@tree.command(name="cmatch", description="Send a custom detailed Fortnite match")
-@app_commands.describe(
-    user="Discord user to mention",
-    won="Did they win?",
-    mode="Game mode: Solo, Duo, Trio, Squad",
-    queue_type="Queue type: Battle Royale, Blitz Royale, etc.",
-    kills="Number of eliminations",
-    placement="Placement if lost",
-    skin_url="URL of the skin thumbnail (optional)"
-)
-async def cmatch(interaction: discord.Interaction, user: discord.Member, won: bool, mode: str, queue_type: str, kills: int, placement: int = 0, skin_url: str = None):
-    mention = f"<@{user.id}>"
-    send_professional_embed(mention, mode, queue_type, kills, placement, won, skin_url)
-    await interaction.response.send_message("Custom detailed match sent via webhook ✅", ephemeral=True)
-    print(f"[SlashCommand] {interaction.user} sent /cmatch for {mention}")
-
-# --- ON READY ---
+# -------------------------------
+# Events
+# -------------------------------
 @client.event
 async def on_ready():
-    if GUILD_ID:
-        guild = discord.Object(id=GUILD_ID)
-        await tree.sync(guild=guild)
-        print(f"[Bot] Commands synced for guild {GUILD_ID}")
-    else:
-        await tree.sync()
-        print("[Bot] Commands globally synced")
-    print(f"[Bot] Online as {client.user}")
-    await send_startup_message()
-    client.loop.create_task(check_matches_loop())
+    print(f"[Bot] Logged in as {client.user} ✅")
+    channel = discord.utils.get(client.get_all_channels(), name="general")  # Change if needed
+    if channel:
+        await channel.send("✅ **Bot Online!** 🚀")
 
-# --- RUN BOT ---
-print("[Bot] Starting...")
-client.run(DISCORD_TOKEN)
+    # Test API connection
+    try:
+        resp = requests.get("https://fortniteapi.io/v1/status", headers={"Authorization": "static-token"})
+        if resp.status_code == 200:
+            await channel.send("🌐 Connected to Fortnite API successfully!")
+            print("[Bot] Fortnite API connection successful ✅")
+        else:
+            await channel.send("⚠️ Failed to connect to Fortnite API.")
+            print("[Bot] Fortnite API connection failed ❌")
+    except Exception as e:
+        await channel.send("❌ Fortnite API connection error.")
+        print(f"[Bot] API error: {e}")
+
+# -------------------------------
+# Slash Command: /cmatch
+# -------------------------------
+@client.tree.command(name="cmatch", description="Post a custom Fortnite match result.")
+@app_commands.describe(
+    result="Did you win or lose?",
+    user="Which user played?",
+    mode="Solo, Duo, Trio, Squad",
+    gametype="Battle Royale, Blitz Royale, etc.",
+    placement="Placement if lost (e.g., 5th)",
+    kills="Number of kills",
+    skin="Skin worn in the match (image URL)"
+)
+async def cmatch(interaction: discord.Interaction, result: str, user: str, mode: str, gametype: str, placement: str, kills: int, skin: str):
+    print(f"[Bot] /cmatch command used by {interaction.user}")
+
+    # Emoji
+    emoji = "🏆" if result.lower() == "won" else "💀"
+
+    # Embed
+    embed = discord.Embed(
+        title=f"Fortnite Tracker 🚀 - Match Result",
+        description=f"{emoji} **{user}** has finished a match!",
+        color=discord.Color.green() if result.lower() == "won" else discord.Color.red(),
+        timestamp=datetime.datetime.now(datetime.timezone.utc)
+    )
+    embed.add_field(name="🎮 Game Mode", value=mode, inline=True)
+    embed.add_field(name="🗺️ Type", value=gametype, inline=True)
+    embed.add_field(name="📊 Result", value=result, inline=True)
+    embed.add_field(name="📍 Placement", value=placement, inline=True)
+    embed.add_field(name="🔫 Kills", value=str(kills), inline=True)
+    embed.set_footer(text="Fortnite Tracker 🚀 | Powered by Discord")
+    embed.set_thumbnail(url=skin)
+
+    # Send via webhook
+    if WEBHOOK_URL:
+        requests.post(WEBHOOK_URL, json={"embeds": [embed.to_dict()]})
+        await interaction.response.send_message("✅ Match result sent via webhook!", ephemeral=True)
+        print("[Bot] Match result sent to webhook.")
+    else:
+        await interaction.response.send_message("⚠️ Webhook not configured.", ephemeral=True)
+        print("[Bot] Webhook missing ❌")
+
+# -------------------------------
+# Run bot
+# -------------------------------
+keep_alive()
+client.run(TOKEN)
